@@ -2,7 +2,8 @@ import type { AddressInfo } from 'node:net'
 import type { MachineProfile, SshExecOptions, SshExecResult, SshMachineEvent, SshSession, SshTunnelHandle } from '../types/index'
 import type { SshTransport, SshTransportOptions } from './transport.types'
 import { Buffer } from 'node:buffer'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
@@ -300,6 +301,7 @@ afterEach(async () => {
       else
         process.env.DSH_HOME = harnessHomeBefore
       vi.unstubAllGlobals()
+      vi.restoreAllMocks()
       clearHostRuntime()
     }
   }
@@ -345,8 +347,12 @@ function boot(overrides: Partial<{
     process.env.DSH_HOME = harnessHomeWith(overrides.envCredentials())
   setHostConfig({ ...(overrides.config ?? config), sshDir: tempRoot() })
   setKnownHostsPath(join(tempRoot(), 'known-hosts.json'))
+  const bundledPluginsRoot = tempRoot()
+  mkdirSync(join(bundledPluginsRoot, 'dsh-tauri-ssh'))
+  writeFileSync(join(bundledPluginsRoot, 'dsh-tauri-ssh', 'package.json'), JSON.stringify({ name: 'dsh-tauri-ssh', dsh: { bundle: {} } }))
   setMachineDeps({
     transport,
+    bundledPluginsTree: { root: bundledPluginsRoot, pluginNames: ['dsh-tauri-ssh'] },
     localAllowlist: overrides.localAllowlist ?? (() => EMPTY_ALLOWLIST),
     emitStatus: (id, status) => {
       emits.push({ id, state: status.state, ...status.progress === undefined ? {} : { progress: status.progress } })
@@ -895,9 +901,6 @@ describe('sshManager', () => {
 
 describe('sshManager install', () => {
   it('installs dsh end-to-end, copies credentials, and auto-connects', async () => {
-    // Session 1 = install (platform probe, missing check, install script,
-    // entry check, credentials copy); session 2 = the automatic connect
-    // (root probe refused, platform probe, missing check, launch, healthy).
     let sessions = 0
     const factory = () => {
       sessions += 1
@@ -1287,8 +1290,6 @@ describe('sshManager install', () => {
     const factory = () => {
       sessions += 1
       const session = new FakeSession(index => sessions >= 2 && index >= 1)
-      // The first (failed) connect finds the runtime incomplete; the install
-      // and the auto-connect see it whole.
       if (sessions === 1)
         session.startNotInstalled = true
       return session
@@ -1303,7 +1304,6 @@ describe('sshManager install', () => {
     expect(result.dshPath).toBe(ENTRY)
     expect(manager.status(MachineId('m1')).dshMissing).toBeUndefined()
     await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-connect after install')
-    // First (failed) connect + install + auto-connect.
     expect(transport.connectCalls, JSON.stringify(events.since(MachineId('m1')))).toBe(3)
   })
 
@@ -1574,13 +1574,17 @@ describe('sshManager reconnect', () => {
     expect(manager.status(MachineId('m1')).tunnelBaseUrl).toBe('http://127.0.0.1:49152/?token=tok-abc-123')
   })
 
-  it('syncs bundled plugins before ensuring the instance (failure degrades, never blocks)', async () => {
+  it('syncs the supplied plugin tree before ensuring the instance', async () => {
     const session = new FakeSession(() => true)
     const { manager, events } = boot({ sessionFactory: () => session })
     const link = await manager.connect(MachineId('m1'))
     expect(link.tunnelBaseUrl).toContain('http://127.0.0.1:')
     expect(session.commands.some(command => command.startsWith('cat "$HOME/.dsh-desktop/plugins'))).toBe(true)
     expect(session.commands.some(command => command.includes('PLUGINS_SYNCED'))).toBe(true)
+    const upload = session.options[session.commands.findIndex(command => command.includes('PLUGINS_SYNCED'))]?.stdinData
+    expect(upload).toBeInstanceOf(Buffer)
+    const manifest = execFileSync('tar', ['-xOzf', '-', './dsh-tauri-ssh/package.json'], { input: upload, encoding: 'utf8' })
+    expect(JSON.parse(manifest)).toEqual({ name: 'dsh-tauri-ssh', dsh: { bundle: {} } })
     expect(events.since(MachineId('m1')).events.map(event => event.line).some(line => line.includes('捆绑插件已同步'))).toBe(true)
   })
 

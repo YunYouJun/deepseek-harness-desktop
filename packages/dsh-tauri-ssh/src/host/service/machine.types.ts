@@ -9,6 +9,7 @@ import type {
   SshTunnelHandle,
 } from '../types/index'
 import type { WorkspaceAllowlist } from '../utils/allowlist'
+import type { BundledPluginsTree } from '../utils/plugins-sync'
 import type { SshTransport } from './transport.types'
 
 export interface MachineState {
@@ -39,4 +40,5 @@ export interface MachineDeps {
   transport: SshTransport
   emitStatus: (machineId: MachineId, status: SshMachineStatus) => void
   localAllowlist: () => WorkspaceAllowlist
+  bundledPluginsTree?: BundledPluginsTree
 }

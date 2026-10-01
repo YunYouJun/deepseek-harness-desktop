@@ -6,18 +6,32 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { buildPluginsBundle, findBundledPluginsTree, pluginSyncApplyCommand, pluginSyncMarkerCommand, WIRE_SCRIPT } from './plugins-sync'
 
 describe('findBundledPluginsTree', () => {
-  it('locates the deployed tree from the repo dev layout (packages/ → src-tauri/resources/node_modules)', () => {
-    // 本测试运行于包源码树内：ownPkgDir=packages/dsh-tauri-ssh，候选一应被
-    // 「ssh2 依赖不在」拒绝，候选二命中 build:plugins 的部署树
-    const tree = findBundledPluginsTree()
-    expect(tree).toBeDefined()
-    expect(tree!.root).toContain('src-tauri/resources/node_modules')
-    expect(tree!.pluginNames).toContain('dsh-tauri-ssh')
-    expect(tree!.pluginNames).toContain('dsh-tauri-ui')
-    // 第三方依赖不挂 dsh 字段，不得混入插件清单；上游 panel 包与 tailwind 样式包并入后为 10 个
-    expect(tree!.pluginNames).not.toContain('ssh2')
-    expect(tree!.pluginNames).not.toContain('dsh-tauri-panel')
-    expect(tree!.pluginNames.length).toBeGreaterThanOrEqual(10)
+  it('locates deployed plugins from the dev layout and excludes ordinary dependencies', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-plugins-discovery-'))
+    try {
+      const source = join(root, 'packages', 'dsh-tauri-ssh')
+      const deployed = join(root, 'src-tauri', 'resources', 'node_modules')
+      mkdirSync(source, { recursive: true })
+      writeFileSync(join(source, 'package.json'), '{"name":"dsh-tauri-ssh"}')
+      for (const name of ['dsh-tauri-ssh', 'dsh-tauri-ui', 'ssh2', 'dsh-tauri-panel']) {
+        mkdirSync(join(deployed, name), { recursive: true })
+        writeFileSync(join(deployed, name, 'package.json'), JSON.stringify({
+          name,
+          ...name === 'dsh-tauri-ssh' || name === 'dsh-tauri-ui' ? { dsh: { bundle: {} } } : {},
+        }))
+      }
+      expect(findBundledPluginsTree(source)).toEqual({
+        root: deployed,
+        pluginNames: ['dsh-tauri-ssh', 'dsh-tauri-ui'],
+      })
+      expect(findBundledPluginsTree(join(deployed, 'dsh-tauri-ssh'))).toEqual({
+        root: deployed,
+        pluginNames: ['dsh-tauri-ssh', 'dsh-tauri-ui'],
+      })
+    }
+    finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

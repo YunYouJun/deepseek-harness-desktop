@@ -53,8 +53,7 @@ export interface BundledPluginsTree {
   pluginNames: string[]
 }
 
-export function findBundledPluginsTree(): BundledPluginsTree | undefined {
-  let ownPkgDir = dirname(realpathSync(fileURLToPath(import.meta.url)))
+export function findBundledPluginsTree(ownPkgDir = dirname(realpathSync(fileURLToPath(import.meta.url)))): BundledPluginsTree | undefined {
   for (let depth = 0; depth < 6; depth += 1) {
     try {
       const manifest = JSON.parse(readFileSync(join(ownPkgDir, 'package.json'), 'utf8')) as { name?: string }
@@ -139,9 +138,9 @@ export async function syncBundledPlugins(
   session: SshSession,
   profileName: string,
   remotePort: number,
-  hooks: { onEvent?: (stage: SshMachineStage, line: string) => void } = {},
+  hooks: { onEvent?: (stage: SshMachineStage, line: string) => void, tree?: BundledPluginsTree | undefined } = {},
 ): Promise<boolean> {
-  const tree = findBundledPluginsTree()
+  const tree = hooks.tree ?? findBundledPluginsTree()
   if (tree === undefined) {
     hooks.onEvent?.('install', '未找到本地捆绑插件树（dev 环境需先 build:plugins），跳过远端同步')
     return false

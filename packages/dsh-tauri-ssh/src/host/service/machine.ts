@@ -382,6 +382,7 @@ async function performConnect(machineId: MachineId, profile: MachineProfile, sig
   const session = await openSessionOrFail(machineId, profile, signal)
   try {
     await syncBundledPlugins(session, safeProfileName(profile.profileName), profile.remotePort, {
+      tree: machineRuntimeDeps().bundledPluginsTree,
       onEvent: (stage, line) => {
         if (generation === target.generation)
           events.append(machineId, stage, line)
