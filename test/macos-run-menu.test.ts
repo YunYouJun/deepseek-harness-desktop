@@ -6,9 +6,9 @@ const navbarSource = readFileSync(new URL('../src/layout/components/navbar.tsx',
 const i18nSource = readFileSync(new URL('../src-tauri/src/config/i18n.rs', import.meta.url), 'utf8')
 
 function submenuItems(id: string) {
-  const match = builderSource.match(new RegExp(`"${id}",\\s*crate::config::i18n::t\\("[^"]+"\\),\\s*true,\\s*&\\[([^\\]]+)\\]`))
+  const match = builderSource.match(new RegExp(`"${id}",\\s*crate::config::i18n::t\\("[^"]+"\\),\\s*true,\\s*&\\[([\\s\\S]*?)\\],?\\s*\\)`))
   expect(match, `${id} must be installed with native menu items`).not.toBeNull()
-  return match![1].match(/&\w+/g)
+  return match![1].match(/&\w+(?:\[\d+\])?/g)
 }
 
 describe('macOS native menu', () => {
@@ -78,7 +78,18 @@ describe('macOS native menu', () => {
   })
 
   it('toggles the focused shell window from View without suppressing AppKit fullscreen in Window', () => {
-    expect(submenuItems('desktop-view-menu')).toEqual(['&fullscreen'])
+    expect(submenuItems('desktop-view-menu')).toEqual([
+      '&view_commands[0]',
+      '&view_commands[1]',
+      '&view_commands[2]',
+      '&view_commands[3]',
+      '&view_separator',
+      '&zoom_in',
+      '&zoom_out',
+      '&zoom_reset',
+      '&fullscreen_separator',
+      '&fullscreen',
+    ])
     expect(builderSource).not.toContain('PredefinedMenuItem::fullscreen(')
     expect(builderSource).toMatch(/MenuItem::with_id\(\s*app,\s*"desktop-fullscreen",\s*&fullscreen_label,\s*true,\s*Some\("Ctrl\+Super\+F"\)/)
     const handler = builderSource.slice(builderSource.indexOf('"desktop-fullscreen" =>'))
@@ -91,5 +102,12 @@ describe('macOS native menu', () => {
     expect(builderSource).toContain('let label = crate::config::i18n::t(fullscreen_menu_label_key(is_fullscreen));')
     expect(builderSource).toContain('Some(fullscreen)')
     expect(builderSource).toContain('sync_macos_fullscreen_menu(window)')
+  })
+
+  it('routes View actions only to the focused shell window', () => {
+    const handler = builderSource.slice(builderSource.indexOf('"desktop-toggle-sidebar"\n'))
+    expect(handler).toContain('window.label() != crate::desktop::pet::PET_WINDOW_LABEL')
+    expect(handler).toContain('window.is_focused().unwrap_or(false)')
+    expect(handler).toMatch(/app\.emit_to\(\s*window.label\(\),\s*"macos-menu-action",\s*event.id\(\).as_ref\(\),?\s*\)/)
   })
 })

@@ -1,3 +1,4 @@
+import type { DshViewCommand } from '@/hooks/use-dsh-shortcuts'
 import type { DshPlugin } from '@/types'
 import type { ConfigTab } from '@/ui/dialog/config'
 import {
@@ -20,7 +21,7 @@ import { If } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
 import { useStore } from 'valtio-define'
 import { queryKeys } from '@/config/query-keys'
-import { shortcutHint, useDshShortcuts } from '@/hooks/use-dsh-shortcuts'
+import { DSH_VIEW_COMMANDS, shortcutHint, useDshShortcuts } from '@/hooks/use-dsh-shortcuts'
 import { useDshStyle } from '@/hooks/use-dsh-style'
 import { useListen } from '@/hooks/use-listen'
 import { store } from '@/store'
@@ -225,9 +226,10 @@ export interface NavbarProps {
   onOpenFolder?: () => void
   /** 显示键盘快捷键：向 iframe 发 `dsh://shortcuts:open`，弹官方 `shortcuts.open` 弹层（官方蒙版）；传入时该项可用 */
   onOpenShortcuts?: () => void
+  onViewCommand?: (command: DshViewCommand) => void
 }
 
-export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder, onOpenShortcuts, onOpenMachineManager, onOpenSyncToRemote }: NavbarProps) {
+export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder, onOpenShortcuts, onViewCommand, onOpenMachineManager, onOpenSyncToRemote }: NavbarProps) {
   const { t } = useTranslation()
   const isFullscreen = useMacOSFullscreen()
   const isMaximized = useMaximized()
@@ -391,7 +393,21 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
   useListen<string>('macos-menu-action', (event) => {
     if (!IS_MACOS)
       return
+    const viewCommand = DSH_VIEW_COMMANDS.find(item => item.action === event.payload)
+    if (viewCommand) {
+      onViewCommand?.(viewCommand.command)
+      return
+    }
     switch (event.payload) {
+      case 'desktop-zoom-in':
+        store.setting.zoom('increase')
+        break
+      case 'desktop-zoom-out':
+        store.setting.zoom('decrease')
+        break
+      case 'desktop-zoom-reset':
+        store.setting.zoom('reset')
+        break
       case 'desktop-config':
         handleOpenConfig('application')
         break
@@ -528,6 +544,46 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
                 >
                   <Label>{t('menu.quit')}</Label>
                 </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
+          <Dropdown>
+            <Button
+              className="rounded-lg h-6 text-[12.5px] px-1.5"
+              size="sm"
+              variant="ghost"
+              aria-label={t('menu.view')}
+              data-testid="dsh-navbar-menu-view"
+            >
+              {t('menu.view')}
+            </Button>
+            <Dropdown.Popover className="rounded-md min-w-55" data-testid="dsh-navbar-menu-popover">
+              <Dropdown.Menu>
+                <Dropdown.Section>
+                  {DSH_VIEW_COMMANDS.map(item => (
+                    <Dropdown.Item
+                      key={item.command}
+                      id={item.command}
+                      className="rounded-md"
+                      isDisabled={onViewCommand == null || !shortcutRows.some(row => row.id === item.command && row.available === true)}
+                      textValue={t(item.label)}
+                      onAction={() => onViewCommand?.(item.command)}
+                    >
+                      <ShortcutLabel label={t(item.label)} hint={shortcutHint(shortcutRows, item.command)} />
+                    </Dropdown.Item>
+                  ))}
+                </Dropdown.Section>
+                <Dropdown.Section>
+                  <Dropdown.Item id="zoom-in" className="rounded-md" textValue={t('menu.zoom_in')} onAction={() => store.setting.zoom('increase')}>
+                    <ShortcutLabel label={t('menu.zoom_in')} hint="Ctrl + +" />
+                  </Dropdown.Item>
+                  <Dropdown.Item id="zoom-out" className="rounded-md" textValue={t('menu.zoom_out')} onAction={() => store.setting.zoom('decrease')}>
+                    <ShortcutLabel label={t('menu.zoom_out')} hint="Ctrl + -" />
+                  </Dropdown.Item>
+                  <Dropdown.Item id="zoom-reset" className="rounded-md" textValue={t('menu.actual_size')} onAction={() => store.setting.zoom('reset')}>
+                    <ShortcutLabel label={t('menu.actual_size')} hint="Ctrl + 0" />
+                  </Dropdown.Item>
+                </Dropdown.Section>
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>

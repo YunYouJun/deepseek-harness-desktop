@@ -1,11 +1,15 @@
-import type { DshShortcutRow } from '@/hooks/use-dsh-shortcuts'
+import type { DshShortcutRow, DshViewCommand } from '@/hooks/use-dsh-shortcuts'
+import { useWatch } from '@reause/core'
+import { invoke } from '@tauri-apps/api/core'
+import { type } from '@tauri-apps/plugin-os'
 import { useRef, useState } from 'react'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-import { useDshShortcuts } from '@/hooks/use-dsh-shortcuts'
+import { DSH_VIEW_COMMANDS, shortcutHint, useDshShortcuts } from '@/hooks/use-dsh-shortcuts'
 import { useDshStyle } from '@/hooks/use-dsh-style'
 import { useIframeMessage } from '@/hooks/use-iframe-message'
 import { useIframePost } from '@/hooks/use-iframe-post'
+import { useListen } from '@/hooks/use-listen'
 import { store } from '@/store'
 import { Recovery } from '@/ui/plugin/recovery'
 import { Iframe } from './iframe'
@@ -36,12 +40,34 @@ export function Webview() {
   const post = useIframePost(iframeRef)
 
   const [dshStyle] = useDshStyle()
-  const [, setDshShortcuts] = useDshShortcuts()
+  const [{ rows: shortcutRows }, setDshShortcuts] = useDshShortcuts()
 
   const { status, serviceHealthy } = useStore(store.harness)
   const { recovery } = useStore(store.recovery)
-  const [{ url: activeTunnelUrl, tint: borderTint }, setRemoteView] = useState({ url: '', tint: null as string | null })
+  const [remoteView, setRemoteView] = useState({ url: '', tint: null as string | null })
+  const { url: activeTunnelUrl, tint: borderTint } = remoteView
   const remoteMode = activeTunnelUrl !== ''
+  const live = status === 'ready' && serviceHealthy
+
+  function syncViewMenu() {
+    if (type() !== 'macos')
+      return
+    void invoke('sync_view_menu', {
+      entries: DSH_VIEW_COMMANDS.map(item => ({
+        id: item.action,
+        enabled: live && shortcutRows.some(row => row.id === item.command && row.available === true),
+        shortcut: shortcutHint(shortcutRows, item.command) ?? null,
+      })),
+    }).catch(error => console.error('[Webview] failed to sync View menu:', error))
+  }
+
+  useWatch([shortcutRows, live], syncViewMenu, { immediate: true })
+  useWatch(activeTunnelUrl, () => setDshShortcuts({ rows: [] }))
+  useWatch(live, (ready) => {
+    if (!ready)
+      setDshShortcuts({ rows: [] })
+  })
+  useListen('tauri://focus', syncViewMenu)
 
   function handleRemoteChange(url: string, tint: string | null) {
     setRemoteView({ url, tint })
@@ -86,12 +112,13 @@ export function Webview() {
   // 判定必须与 `renderContent()` 的 iframe 条件完全一致：`status` 回到 `error`
   // （shutdown / 客户端 boot 失败）时 iframe 已卸载，但 `serviceHealthy` 可能仍为
   // true——只看后者会把回调发给已摘除的接收方，按钮点了没反应。
-  const bridge = status === 'ready' && serviceHealthy
+  const bridge = live
     ? {
         onToggleSidebar: () => post({ type: 'dsh://sidebar:toggle' }),
         onNewChat: () => post({ type: 'dsh://session:new' }),
         onOpenFolder: () => post({ type: 'dsh://workspace:add' }),
         onOpenShortcuts: () => post({ type: 'dsh://shortcuts:open' }),
+        onViewCommand: (command: DshViewCommand) => post({ type: 'dsh://view:command', command }),
       }
     : {}
 
@@ -114,7 +141,7 @@ function parseShortcutRows(rows: unknown): DshShortcutRow[] {
   for (const row of rows) {
     if (typeof row !== 'object' || row === null)
       continue
-    const entry = row as { id?: unknown, label?: unknown, keys?: unknown, aria?: unknown }
+    const entry = row as { id?: unknown, label?: unknown, keys?: unknown, aria?: unknown, available?: unknown }
     if (typeof entry.id !== 'string' || typeof entry.label !== 'string')
       continue
     out.push({
@@ -122,6 +149,7 @@ function parseShortcutRows(rows: unknown): DshShortcutRow[] {
       label: entry.label,
       keys: Array.isArray(entry.keys) ? entry.keys.filter((key): key is string => typeof key === 'string') : [],
       ...typeof entry.aria === 'string' ? { aria: entry.aria } : {},
+      available: entry.available === true,
     })
   }
   return out

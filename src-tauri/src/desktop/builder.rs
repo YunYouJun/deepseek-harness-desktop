@@ -33,6 +33,14 @@ use tauri::menu::{PredefinedMenuItem, Submenu};
 #[cfg(target_os = "macos")]
 static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<MenuItem<Wry>>>> = OnceLock::new();
 
+#[cfg(target_os = "macos")]
+const MACOS_VIEW_COMMANDS: [(&str, &str); 4] = [
+    ("desktop-toggle-sidebar", "menu.toggle_sidebar"),
+    ("desktop-toggle-right-panel", "menu.toggle_right_panel"),
+    ("desktop-open-terminal", "menu.open_terminal"),
+    ("desktop-search-chats", "menu.search_chats"),
+];
+
 #[cfg(windows)]
 use crate::desktop::window::on_page_load;
 use crate::desktop::window::{on_download, on_new_window};
@@ -308,12 +316,52 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         true,
         &[&profiles, &plugins, &harness, &run_separator, &restart],
     )?;
+    let view_commands = MACOS_VIEW_COMMANDS
+        .iter()
+        .map(|(id, key)| {
+            MenuItem::with_id(app, *id, crate::config::i18n::t(key), false, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let view_separator = PredefinedMenuItem::separator(app)?;
+    let zoom_in = MenuItem::with_id(
+        app,
+        "desktop-zoom-in",
+        crate::config::i18n::t("menu.zoom_in"),
+        true,
+        Some("CmdOrCtrl+Equal"),
+    )?;
+    let zoom_out = MenuItem::with_id(
+        app,
+        "desktop-zoom-out",
+        crate::config::i18n::t("menu.zoom_out"),
+        true,
+        Some("CmdOrCtrl+-"),
+    )?;
+    let zoom_reset = MenuItem::with_id(
+        app,
+        "desktop-zoom-reset",
+        crate::config::i18n::t("menu.actual_size"),
+        true,
+        Some("CmdOrCtrl+0"),
+    )?;
+    let fullscreen_separator = PredefinedMenuItem::separator(app)?;
     let view_menu = Submenu::with_id_and_items(
         app,
         "desktop-view-menu",
         crate::config::i18n::t("menu.view"),
         true,
-        &[&fullscreen],
+        &[
+            &view_commands[0],
+            &view_commands[1],
+            &view_commands[2],
+            &view_commands[3],
+            &view_separator,
+            &zoom_in,
+            &zoom_out,
+            &zoom_reset,
+            &fullscreen_separator,
+            &fullscreen,
+        ],
     )?;
 
     let about = MenuItem::with_id(
@@ -511,6 +559,63 @@ fn fullscreen_menu_label_key(is_fullscreen: bool) -> &'static str {
     } else {
         "menu.enter_fullscreen"
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ViewMenuEntry {
+    id: String,
+    enabled: bool,
+    shortcut: Option<String>,
+}
+
+#[tauri::command]
+pub fn sync_view_menu(
+    window: tauri::WebviewWindow<Wry>,
+    entries: Vec<ViewMenuEntry>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if window.label() == crate::desktop::pet::PET_WINDOW_LABEL
+            || !window.is_focused().unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let Some(menu) = window.app_handle().menu() else {
+            return Ok(());
+        };
+        let Some(view) = menu.get("desktop-view-menu") else {
+            return Ok(());
+        };
+        let Some(view) = view.as_submenu() else {
+            return Ok(());
+        };
+        for (id, key) in MACOS_VIEW_COMMANDS {
+            let Some(item) = view.get(id) else {
+                continue;
+            };
+            let Some(item) = item.as_menuitem() else {
+                continue;
+            };
+            let entry = entries.iter().find(|entry| entry.id == id);
+            let enabled = entry.is_some_and(|entry| entry.enabled);
+            let mut label = crate::config::i18n::t(key);
+            if enabled {
+                if let Some(shortcut) = entry
+                    .and_then(|entry| entry.shortcut.as_deref())
+                    .filter(|shortcut| shortcut.len() <= 80)
+                {
+                    label.push_str("    ");
+                    label.push_str(shortcut);
+                }
+            }
+            item.set_text(label)
+                .and_then(|_| item.set_enabled(enabled))
+                .map_err(|error| format!("VIEW_MENU_SYNC_FAILED: {error}"))?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, entries);
+    Ok(())
 }
 
 /// 原生全屏动画会连续触发 Resize；只在状态真正变化时刷新菜单文案。
@@ -1200,6 +1305,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::read_clipboard_image,
         crate::bridge::write_clipboard_text,
         crate::desktop::window::create_app_window,
+        crate::desktop::builder::sync_view_menu,
         crate::desktop::window::quit_app,
         crate::bridge::log_frontend,
         crate::bridge::get_pet_status,
@@ -1266,6 +1372,24 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "desktop-toggle-sidebar"
+            | "desktop-toggle-right-panel"
+            | "desktop-open-terminal"
+            | "desktop-search-chats"
+            | "desktop-zoom-in"
+            | "desktop-zoom-out"
+            | "desktop-zoom-reset" => {
+                if let Some(window) = app.webview_windows().into_values().find(|window| {
+                    window.label() != crate::desktop::pet::PET_WINDOW_LABEL
+                        && window.is_focused().unwrap_or(false)
+                }) {
+                    if let Err(error) =
+                        app.emit_to(window.label(), "macos-menu-action", event.id().as_ref())
+                    {
+                        log::warn!("[menu] failed to emit View action: {error}");
+                    }
+                }
+            }
             #[cfg(target_os = "macos")]
             "desktop-fullscreen" => {
                 if let Some(window) = app.webview_windows().into_values().find(|window| {
