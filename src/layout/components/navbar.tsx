@@ -388,8 +388,6 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
     }
   }
 
-  // macOS 原生菜单 → 复用壳层已有操作；非 macOS 无原生菜单，直接忽略事件。
-  // （useListen 内部把回调放在 ref 转发，这里读到的始终是最新的处理函数。）
   useListen<string>('macos-menu-action', (event) => {
     if (!IS_MACOS)
       return
@@ -448,7 +446,7 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
         onOpenFolder?.()
         break
     }
-  })
+  }, { target: getCurrentWindow().label })
 
   return (
     <div

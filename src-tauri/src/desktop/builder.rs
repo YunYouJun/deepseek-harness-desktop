@@ -549,6 +549,7 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = Some(fullscreen);
+    app.emit("macos-menu-rebuilt", ())?;
     Ok(())
 }
 

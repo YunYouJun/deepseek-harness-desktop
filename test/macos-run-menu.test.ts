@@ -110,4 +110,9 @@ describe('macOS native menu', () => {
     expect(handler).toContain('window.is_focused().unwrap_or(false)')
     expect(handler).toMatch(/app\.emit_to\(\s*window.label\(\),\s*"macos-menu-action",\s*event.id\(\).as_ref\(\),?\s*\)/)
   })
+
+  it('requests current window state only after the rebuilt native menu is installed', () => {
+    const install = builderSource.slice(builderSource.indexOf('pub fn install_macos_menu('), builderSource.indexOf('fn fullscreen_menu_label_key'))
+    expect(install).toMatch(/app\.set_menu\(menu\)\?[\s\S]*window_menu\.set_as_windows_menu_for_nsapp\(\)\?[\s\S]*app\.emit\("macos-menu-rebuilt", \(\)\)\?/)
+  })
 })
