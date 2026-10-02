@@ -87,11 +87,14 @@ describe('macOS native menu', () => {
     expect(i18nSource).toContain(`"${key}" => ("${zh}", "${en}")`)
   })
 
-  it('places the task manager in Help alongside run logs', () => {
+  it('groups feedback links before run logs and the task manager in Help', () => {
     expect(submenuItems('desktop-help-menu')).toEqual([
       '&documentation',
       '&keyboard_shortcuts',
       '&help_separator',
+      '&desktop_feedback',
+      '&harness_feedback',
+      '&feedback_separator',
       '&run_logs',
       '&task_manager',
     ])

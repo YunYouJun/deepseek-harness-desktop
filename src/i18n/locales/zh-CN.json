@@ -98,6 +98,8 @@
   "menu.close": "关闭",
   "menu.quit": "退出",
   "menu.documentation": "文档",
+  "menu.desktop_feedback": "桌面版问题反馈",
+  "menu.harness_feedback": "DeepSeek Harness 官方反馈",
   "about.title": "关于",
   "about.powered_by": "由社区 & DeepSeek Harness 驱动",
   "about.release_date": "发布时间",

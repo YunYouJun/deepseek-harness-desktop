@@ -98,6 +98,8 @@
   "menu.close": "Close",
   "menu.quit": "Quit",
   "menu.documentation": "Documentation",
+  "menu.desktop_feedback": "Desktop Feedback",
+  "menu.harness_feedback": "DeepSeek Harness Official Feedback",
   "about.title": "About",
   "about.powered_by": "Powered by the community & DeepSeek Harness",
   "about.release_date": "Release date",
