@@ -347,6 +347,18 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
     }
     catch (error) {
       console.error(`[Navbar] failed to open ${key}:`, error)
+      toast(t('messages.open_link_failed'), {
+        variant: 'danger',
+        description: <span className="break-all">{HELP_LINKS[key]}</span>,
+        timeout: 10_000,
+        actionProps: {
+          children: t('buttons.copy_link'),
+          onPress: () => {
+            void writeClipboardText(HELP_LINKS[key], t('messages.copy_success'))
+              .catch(copyError => console.error('[Navbar] failed to copy help link:', copyError))
+          },
+        },
+      })
     }
   }
 
