@@ -21,19 +21,41 @@ it('preserves headings, links, fenced code, tables and task lists', () => {
   expect(errors).not.toHaveBeenCalled()
 })
 
-it('removes executable HTML and unsafe links before creating React elements', () => {
+it('removes executable HTML and unsafe links before updating the preview', () => {
   const { container } = render(<MarkdownPreview text={'<script>alert(1)</script>\n\n<img src="x" onerror="alert(1)"><a href="javascript:alert(1)">unsafe</a><svg onload="alert(1)"></svg>'} />)
-  expect(container.querySelector('script, svg')).toBeNull()
+  expect(container.querySelector('script')).toBeNull()
   expect(container.querySelector('img')?.hasAttribute('onerror')).toBe(false)
   expect(container.querySelector('a')?.hasAttribute('href')).toBe(false)
+  expect(container.querySelector('svg')?.hasAttribute('onload')).toBe(false)
   expect(container.textContent?.trim()).toBe('unsafe')
 })
 
 it('updates repeated content and retains sanitized raw HTML attributes', () => {
   const { container, rerender } = render(<MarkdownPreview text={'<p class="intro" style="text-align: center">First</p>\n\nSame\n\nSame'} />)
-  expect(container.querySelector('.intro')?.getAttribute('style')).toBe('text-align: center;')
+  expect(container.querySelector<HTMLElement>('.intro')?.style.textAlign).toBe('center')
   expect(container.querySelectorAll('p')).toHaveLength(3)
   rerender(<MarkdownPreview text="**Updated**" />)
   expect(container.querySelector('strong')?.textContent).toBe('Updated')
   expect(container.textContent?.trim()).toBe('Updated')
+})
+
+it('preserves safe inline SVG content allowed by the original Markdown sanitizer', () => {
+  const { container } = render(<MarkdownPreview text={'<svg viewBox="0 0 10 10"><path d="M0 0 L10 10"></path></svg>'} />)
+  expect(container.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 10 10')
+  expect(container.querySelector('svg path')?.getAttribute('d')).toBe('M0 0 L10 10')
+})
+
+it.each([
+  ['details', 'open', '<details open><summary>More</summary>Visible</details>'],
+  ['span', 'hidden', '<span hidden>Hidden content</span>'],
+  ['select', 'multiple', '<select multiple><option>One</option><option>Two</option></select>'],
+  ['textarea', 'readonly', '<textarea readonly>Read only</textarea>'],
+  ['video', 'controls', '<video controls></video>'],
+  ['video', 'muted', '<video muted></video>'],
+  ['video', 'autoplay', '<video autoplay></video>'],
+])('preserves the native %s %s attribute in sanitized Markdown', (tag, attribute, text) => {
+  const errors = vi.spyOn(console, 'error')
+  const { container } = render(<MarkdownPreview text={text} />)
+  expect(container.querySelector(tag)?.getAttribute(attribute)).toBe('')
+  expect(errors).not.toHaveBeenCalled()
 })
