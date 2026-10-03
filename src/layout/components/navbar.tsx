@@ -10,7 +10,7 @@ import {
   Square,
   Xmark,
 } from '@gravity-ui/icons'
-import { Button, Chip, Description, Dropdown, Label } from '@heroui/react'
+import { Button, Chip, Description, Dropdown, Label, Separator } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
@@ -287,7 +287,7 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
 
   function onHelpAction(key: HelpAction) {
     if (key === 'task-manager')
-      void openTaskManager().catch(() => {})
+      void openTaskManager().catch(() => { })
     else if (key === 'check-update')
       void handleCheckUpdate()
     else if (key === 'about')
@@ -673,6 +673,14 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
             <Dropdown.Popover className="min-w-55" data-testid="dsh-navbar-menu-popover">
               <Dropdown.Menu>
                 <Dropdown.Item
+                  id="documentation"
+                  data-testid="dsh-navbar-item-documentation"
+                  textValue={t('menu.documentation')}
+                  onAction={() => onHelpAction('documentation')}
+                >
+                  <Label>{t('menu.documentation')}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item
                   id="keyboard-shortcuts"
                   data-testid="dsh-navbar-item-keyboard-shortcuts"
                   isDisabled={onOpenShortcuts == null}
@@ -681,6 +689,24 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
                 >
                   <ShortcutLabel label={t('menu.keyboard_shortcuts')} hint={shortcutHint(shortcutRows, 'shortcuts.open')} />
                 </Dropdown.Item>
+                <Separator />
+                <Dropdown.Item
+                  id="desktop-feedback"
+                  data-testid="dsh-navbar-item-desktop-feedback"
+                  textValue={t('menu.desktop_feedback')}
+                  onAction={() => onHelpAction('desktop-feedback')}
+                >
+                  <Label>{t('menu.desktop_feedback')}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="harness-feedback"
+                  data-testid="dsh-navbar-item-harness-feedback"
+                  textValue={t('menu.harness_feedback')}
+                  onAction={() => onHelpAction('harness-feedback')}
+                >
+                  <Label>{t('menu.harness_feedback')}</Label>
+                </Dropdown.Item>
+                <Separator />
                 <Dropdown.Item
                   id="task-manager"
                   data-testid="dsh-navbar-item-task-manager"
@@ -697,6 +723,7 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
                 >
                   <Label>{t('menu.run_logs')}</Label>
                 </Dropdown.Item>
+                <Separator />
                 <Dropdown.Item
                   id="check-update"
                   data-testid="dsh-navbar-item-check-update"
@@ -717,30 +744,6 @@ export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSideb
                   onAction={() => onHelpAction('about')}
                 >
                   <Label>{t('menu.about')}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  id="documentation"
-                  data-testid="dsh-navbar-item-documentation"
-                  textValue={t('menu.documentation')}
-                  onAction={() => onHelpAction('documentation')}
-                >
-                  <Label>{t('menu.documentation')}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  id="desktop-feedback"
-                  data-testid="dsh-navbar-item-desktop-feedback"
-                  textValue={t('menu.desktop_feedback')}
-                  onAction={() => onHelpAction('desktop-feedback')}
-                >
-                  <Label>{t('menu.desktop_feedback')}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  id="harness-feedback"
-                  data-testid="dsh-navbar-item-harness-feedback"
-                  textValue={t('menu.harness_feedback')}
-                  onAction={() => onHelpAction('harness-feedback')}
-                >
-                  <Label>{t('menu.harness_feedback')}</Label>
                 </Dropdown.Item>
               </Dropdown.Menu>
             </Dropdown.Popover>

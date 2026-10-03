@@ -9,6 +9,7 @@ import { SkillsTab } from './skills-tab'
 
 export interface ExtensionPanelProps {
   createSkill: () => Promise<void>
+  plugins?: ReactElement
   market: MarketFace | undefined
 }
 
@@ -18,11 +19,12 @@ interface ExtensionTab {
   render: () => ReactElement
 }
 
-export function ExtensionPanel({ createSkill, market }: ExtensionPanelProps): ReactElement {
+export function ExtensionPanel({ createSkill, market, plugins }: ExtensionPanelProps): ReactElement {
   const t = locale.text
   const tabsId = useId()
   const marketFace = market
   const rows: ExtensionTab[] = [
+    ...(plugins === undefined ? [] : [{ id: 'plugins', label: t('pluginsTab'), render: () => plugins }]),
     ...(marketFace === undefined
       ? []
       : [{ id: 'market', label: t('marketTab'), render: () => <>{marketFace.render({ preferredSubsectionId: 'installed' })}</> }]),
@@ -48,7 +50,7 @@ export function ExtensionPanel({ createSkill, market }: ExtensionPanelProps): Re
             onChange={setRequestedId}
           />
         </div>
-        {rows.filter(row => row.id === activeId || visited.has(row.id)).map((row) => {
+        {rows.filter(row => row.id === activeId || (row.id !== 'plugins' && visited.has(row.id))).map((row) => {
           const selected = row.id === activeId
           return <div key={row.id} id={`${tabsId}-${row.id}-panel`} className="min-w-0 pt-[2px]" role="tabpanel" aria-labelledby={`${tabsId}-${row.id}`} hidden={!selected}>{row.render()}</div>
         })}

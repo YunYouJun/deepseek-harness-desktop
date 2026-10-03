@@ -362,6 +362,291 @@ fn is_appimage(path: &std::path::Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("AppImage"))
 }
 
+/// 安装包对应的 MIME 类型（用于解析桌面默认处理器），只认 /deb/rpm。
+#[cfg(target_os = "linux")]
+fn installer_mime(path: &std::path::Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "deb" => Some("application/vnd.debian.binary-package"),
+        "rpm" => Some("application/x-rpm"),
+        _ => None,
+    }
+}
+
+/// 桌面条目的下探层数上限（id 是相对 `applications/` 的路径，理论上可嵌套任意层，
+/// 实际发行版最多到 `vendor/` 一级，留 4 层足够且不会无界遍历）。
+#[cfg(target_os = "linux")]
+const MAX_DESKTOP_ENTRY_DEPTH: usize = 4;
+
+/// 桌面条目搜索目录：`$XDG_DATA_HOME/applications` + `$XDG_DATA_DIRS/applications`。
+///
+/// 纯函数（环境值由调用方传入），空串按 XDG 规范等同未设置：`XDG_DATA_HOME` 空
+/// 则退回 `$HOME/.local/share`，`XDG_DATA_DIRS` 空则退回
+/// `/usr/local/share:/usr/share`，否则会把系统 applications 目录整个漏掉。
+#[cfg(target_os = "linux")]
+fn applications_dirs_from(
+    data_home: Option<&std::ffi::OsStr>,
+    data_dirs: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    match data_home.filter(|value| !value.is_empty()) {
+        Some(dir) => roots.push(PathBuf::from(dir)),
+        None => {
+            if let Some(home) = home.filter(|value| !value.is_empty()) {
+                roots.push(PathBuf::from(home).join(".local/share"));
+            }
+        }
+    }
+    let data_dirs = data_dirs
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+    roots.extend(
+        data_dirs
+            .split(':')
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from),
+    );
+    roots
+        .into_iter()
+        .map(|dir| dir.join("applications"))
+        .collect()
+}
+
+/// 当前进程环境下的桌面条目搜索目录。
+#[cfg(target_os = "linux")]
+fn applications_dirs() -> Vec<PathBuf> {
+    applications_dirs_from(
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("XDG_DATA_DIRS").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// 按目录顺序查找桌面条目。
+///
+/// 桌面条目的 id 是相对 `applications/` 的路径把 `/` 换成 `-`（`foo/bar.desktop`
+/// 的 id 是 `foo-bar.desktop`），所以要逐层下探并按推导出的 id 比对；同一 id 命中
+/// 多个时先命中的层更浅，正合「浅路径优先」的规范约定。
+#[cfg(target_os = "linux")]
+fn find_desktop_entry(id: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    if id.contains('/') || id.contains("..") {
+        return None;
+    }
+    dirs.iter().find_map(|dir| find_entry_in_dir(id, dir))
+}
+
+/// 在单个 applications 目录内按层序（浅层优先）查找指定 id 的条目。
+#[cfg(target_os = "linux")]
+fn find_entry_in_dir(id: &str, dir: &std::path::Path) -> Option<PathBuf> {
+    let mut level = vec![(dir.to_path_buf(), String::new())];
+    for _ in 0..MAX_DESKTOP_ENTRY_DEPTH {
+        let mut next = Vec::new();
+        for (current, prefix) in level {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                else {
+                    continue;
+                };
+                if path.is_dir() {
+                    next.push((path, format!("{prefix}{name}-")));
+                } else if format!("{prefix}{name}") == id {
+                    return Some(path);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        level = next;
+    }
+    None
+}
+
+/// 当前 MIME 类型的默认处理器 id（`xdg-mime query default`）。
+#[cfg(target_os = "linux")]
+fn default_handler_id(mime: &str) -> Option<String> {
+    let output = std::process::Command::new("xdg-mime")
+        .args(["query", "default", mime])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// 按空白切分 `Exec`，双引号成组、反斜杠转义。
+///
+/// 切分结果直接作为 argv 交给系统调用，不经 shell 二次解释，因此引号与转义
+/// 只需还原为字面量。
+#[cfg(target_os = "linux")]
+fn split_exec(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// 解析 `.desktop` 的 `[Desktop Entry]` 段：返回 `Exec` 参数与是否需要终端。
+///
+/// 只认主段，`[Desktop Action …]` 等其它段里的 `Exec` 不参与（动作不是文件处理器）。
+#[cfg(target_os = "linux")]
+fn parse_desktop_entry(text: &str) -> Option<(Vec<String>, bool)> {
+    let mut group = String::new();
+    let mut exec = None;
+    let mut terminal = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            group = line[1..line.len() - 1].to_string();
+            continue;
+        }
+        if group != "Desktop Entry" {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("Exec=") {
+            exec = Some(split_exec(value));
+        } else if let Some(value) = line.strip_prefix("Terminal=") {
+            terminal = value.trim().eq_ignore_ascii_case("true");
+        }
+    }
+    Some((exec?, terminal))
+}
+
+/// 展开 `Exec` 字段码：首个 `%f/%F/%u/%U` 换成安装包路径，其余字段码丢弃；
+/// 完全不含文件码时按处理器惯例追加路径。
+#[cfg(target_os = "linux")]
+fn exec_with_file(tokens: &[String], file: &str) -> Vec<String> {
+    let mut used = false;
+    let mut command = Vec::with_capacity(tokens.len() + 1);
+    for token in tokens {
+        let mut expanded = String::new();
+        let mut chars = token.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '%' {
+                expanded.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('%') => expanded.push('%'),
+                Some(code) if "fFuU".contains(code) => {
+                    if !used {
+                        expanded.push_str(file);
+                        used = true;
+                    }
+                }
+                Some(_) => {}
+                None => expanded.push('%'),
+            }
+        }
+        if !expanded.is_empty() {
+            command.push(expanded);
+        }
+    }
+    if !used {
+        command.push(file.to_string());
+    }
+    command
+}
+
+/// 处理器程序是否真实存在且可执行（含 `/` 的按路径判断，裸名按 `PATH` 查找）。
+///
+/// 桌面条目可能指向已被卸载的程序（处理器卸了、条目还在），此时 `sh` 会以 127
+/// 退出，而 spawn 本身是成功的——不先验一遍就会吞掉失败、让上层错过兜底。
+#[cfg(target_os = "linux")]
+fn resolves_to_executable(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+    if program.contains('/') {
+        return executable(std::path::Path::new(program));
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| executable(&dir.join(program)))
+    })
+}
+
+/// 由一个等待子进程的 shell 启动处理器：`/bin/sh -c '"$@"' sh <命令…>`。
+///
+/// 返回的句柄可丢弃：子进程独立存活，丢弃只表示本进程不再回收它。
+#[cfg(target_os = "linux")]
+fn spawn_waited_handler(command: &[String]) -> Result<std::process::Child, String> {
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| "UPDATE_OPEN: empty handler command".to_string())?;
+    if !resolves_to_executable(program) {
+        return Err(format!("UPDATE_OPEN: handler program not found: {program}"));
+    }
+    let mut child = std::process::Command::new("/bin/sh");
+    child
+        .arg("-c")
+        .arg(r#""$@""#)
+        .arg("sh")
+        .arg(program)
+        .args(args)
+        .stdin(std::process::Stdio::null());
+    child.spawn().map_err(|e| format!("UPDATE_OPEN: {e}"))
+}
+
+/// 用系统默认处理器打开安装包，并保证处理器始终有活着的父进程。
+///
+/// `xdg-open`（opener 插件底层 `open::that_detached` 的 double-fork + `setsid`）
+/// 启动处理器后立即退出，处理器被 init 收养（`PPID=1`）；而处理器（GDebi 等）的
+/// 安装按钮会 `exec` `pkexec`，pkexec 在 `getppid()==1` 时拒绝运行，表现为
+/// 「点了安装、窗口直接消失、什么都没装上」（issue #865）。这里自行解析默认
+/// 处理器的 `Exec` 并交由一个等待子进程的 shell 启动：「对话框立即更新」路径下
+/// 该 shell 是本进程的子进程，「退出时自动打开」路径下它被 init 收养但仍在等待，
+/// 两条路径下处理器的父进程都活着，提权因此可用。
+#[cfg(target_os = "linux")]
+fn open_with_system_handler(file: &std::path::Path) -> Result<(), String> {
+    let mime = installer_mime(file)
+        .ok_or_else(|| "UPDATE_OPEN: unsupported installer type".to_string())?;
+    let id =
+        default_handler_id(mime).ok_or_else(|| "UPDATE_OPEN: no default handler".to_string())?;
+    let entry = find_desktop_entry(&id, &applications_dirs())
+        .ok_or_else(|| format!("UPDATE_OPEN: desktop entry not found: {id}"))?;
+    let text = std::fs::read_to_string(&entry).map_err(|e| format!("UPDATE_OPEN: {e}"))?;
+    let (exec, terminal) = parse_desktop_entry(&text)
+        .ok_or_else(|| format!("UPDATE_OPEN: no Exec in {}", entry.display()))?;
+    if terminal {
+        return Err(format!("UPDATE_OPEN: handler needs a terminal: {id}"));
+    }
+    let command = exec_with_file(&exec, &file.to_string_lossy());
+    spawn_waited_handler(&command).map(|_| ())
+}
+
 /// 校验安装包并交给系统默认处理器打开（不停服务、不动「待安装」标记）。
 ///
 /// **调用方必须先停 Harness**（见 [`stop_for_installer`](crate::service::workflow::stop_for_installer)）：
@@ -380,8 +665,7 @@ pub(super) fn open_installer_now(app_handle: &AppHandle, path: &str) -> Result<(
 
     // Linux：AppImage 自带运行时，直接执行；xdg-open 依赖桌面注册的 MIME
     // 处理器，COSMIC 等未注册的环境会静默失败（open::that_detached 只检查
-    // 进程是否 spawn 成功，看不到 xdg-open 的退出码）。.deb/.rpm 仍交给系统
-    // 默认处理器（软件中心 / 包管理器）。
+    // 进程是否 spawn 成功，看不到 xdg-open 的退出码）。
     #[cfg(target_os = "linux")]
     if is_appimage(&resolved) {
         std::process::Command::new(&resolved)
@@ -391,6 +675,15 @@ pub(super) fn open_installer_now(app_handle: &AppHandle, path: &str) -> Result<(
             .spawn()
             .map_err(|e| format!("UPDATE_OPEN: {e}"))?;
         return Ok(());
+    }
+
+    // .deb/.rpm 仍交给系统默认处理器（软件中心 / 包管理器），但由本进程启动，
+    // 让处理器有活着的父进程，否则其提权按钮会被 pkexec 的孤儿检查拒绝
+    // （issue #865）。处理器解析失败时退回 opener 的分离式交接：至少能打开。
+    #[cfg(target_os = "linux")]
+    match open_with_system_handler(&resolved) {
+        Ok(()) => return Ok(()),
+        Err(error) => log::warn!("UPDATE_OPEN: system handler launch failed: {error}"),
     }
 
     app_handle
@@ -543,5 +836,235 @@ mod tests {
             .join("updates-evil")
             .join("x.exe");
         assert!(ensure_within_updates_dir(&sibling, &root).is_err());
+    }
+
+    /// 安装包 MIME 只认 deb/rpm 且大小写不敏感，其它格式不参与处理器解析。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn installer_mime_maps_deb_and_rpm_only() {
+        use std::path::Path;
+        assert_eq!(
+            installer_mime(Path::new("/tmp/App_0.21.0_amd64.deb")),
+            Some("application/vnd.debian.binary-package")
+        );
+        assert_eq!(
+            installer_mime(Path::new("/tmp/App_0.21.0_x86_64.RPM")),
+            Some("application/x-rpm")
+        );
+        assert_eq!(installer_mime(Path::new("/tmp/App.AppImage")), None);
+        assert_eq!(installer_mime(Path::new("/tmp/App")), None);
+    }
+
+    /// 桌面条目解析只取 [Desktop Entry] 段：引号参数成组，动作段的 Exec 不参与。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_desktop_entry_reads_main_group_only() {
+        let text = "[Desktop Entry]\nType=Application\nTerminal=false\nExec=gdebi-gtk \"%f\" --flag\n\n[Desktop Action Other]\nExec=ignored %f\n";
+        let (exec, terminal) = parse_desktop_entry(text).unwrap();
+        assert_eq!(
+            exec,
+            vec![
+                "gdebi-gtk".to_string(),
+                "%f".to_string(),
+                "--flag".to_string()
+            ]
+        );
+        assert!(!terminal);
+        let (_, terminal) =
+            parse_desktop_entry("[Desktop Entry]\nExec=x\nTerminal=true\n").unwrap();
+        assert!(terminal);
+        assert!(parse_desktop_entry("[Desktop Entry]\nType=Application\n").is_none());
+    }
+
+    /// 字段码展开：首个文件码换成安装包路径、其余字段码丢弃、无文件码时追加路径。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exec_with_file_expands_field_codes() {
+        fn tokens(list: &[&str]) -> Vec<String> {
+            list.iter().map(|item| item.to_string()).collect()
+        }
+        assert_eq!(
+            exec_with_file(&tokens(&["gdebi-gtk", "%f"]), "/tmp/a.deb"),
+            tokens(&["gdebi-gtk", "/tmp/a.deb"])
+        );
+        assert_eq!(
+            exec_with_file(&tokens(&["apt", "--file", "%F", "%i"]), "/tmp/a.deb"),
+            tokens(&["apt", "--file", "/tmp/a.deb"])
+        );
+        assert_eq!(
+            exec_with_file(&tokens(&["gdebi-gtk"]), "/tmp/a.deb"),
+            tokens(&["gdebi-gtk", "/tmp/a.deb"])
+        );
+        assert_eq!(
+            exec_with_file(&tokens(&["sh", "-c", "echo 100%%"]), "/tmp/a.deb"),
+            tokens(&["sh", "-c", "echo 100%", "/tmp/a.deb"])
+        );
+    }
+
+    /// 桌面条目查找按目录顺序命中第一个存在的文件，并拒绝带路径的 id。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_desktop_entry_searches_dirs_in_order() {
+        let dir = std::env::temp_dir().join(format!("dsh-desktop-entry-{}", std::process::id()));
+        let empty = dir.join("empty");
+        let hit = dir.join("hit");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&hit).unwrap();
+        std::fs::write(
+            hit.join("gdebi.desktop"),
+            "[Desktop Entry]\nExec=gdebi-gtk %f\n",
+        )
+        .unwrap();
+        assert_eq!(
+            find_desktop_entry("gdebi.desktop", &[empty.clone(), hit.clone()]),
+            Some(hit.join("gdebi.desktop"))
+        );
+        assert_eq!(
+            find_desktop_entry("missing.desktop", &[empty, hit.clone()]),
+            None
+        );
+        assert_eq!(find_desktop_entry("../gdebi.desktop", &[hit]), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 嵌套条目的 id 是相对路径把 `/` 换成 `-`：`vendor/gdebi.desktop` 应答
+    /// `vendor-gdebi.desktop`；同一 id 命中多个时浅层优先。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_desktop_entry_derives_ids_for_nested_dirs() {
+        let dir = std::env::temp_dir().join(format!("dsh-desktop-nested-{}", std::process::id()));
+        let apps = dir.join("applications");
+        std::fs::create_dir_all(apps.join("vendor")).unwrap();
+        std::fs::create_dir_all(apps.join("vendor/deep")).unwrap();
+        std::fs::write(apps.join("vendor/gdebi.desktop"), "nested").unwrap();
+        std::fs::write(apps.join("vendor/deep/tool.desktop"), "deep").unwrap();
+        std::fs::write(apps.join("flat-gdebi.desktop"), "flat").unwrap();
+
+        assert_eq!(
+            find_desktop_entry("vendor-gdebi.desktop", std::slice::from_ref(&apps)),
+            Some(apps.join("vendor/gdebi.desktop"))
+        );
+        assert_eq!(
+            find_desktop_entry("vendor-deep-tool.desktop", std::slice::from_ref(&apps)),
+            Some(apps.join("vendor/deep/tool.desktop"))
+        );
+        assert_eq!(
+            find_desktop_entry("flat-gdebi.desktop", std::slice::from_ref(&apps)),
+            Some(apps.join("flat-gdebi.desktop")),
+            "嵌套文件名本身不构成 id，只有推导出的 id 参与匹配"
+        );
+        assert_eq!(
+            find_desktop_entry("gdebi.desktop", std::slice::from_ref(&apps)),
+            None,
+            "仅作为嵌套文件名的 gdebi.desktop 不属于顶层 id"
+        );
+
+        std::fs::write(apps.join("vendor-flat.desktop"), "shallow").unwrap();
+        std::fs::write(apps.join("vendor/flat.desktop"), "deep").unwrap();
+        assert_eq!(
+            find_desktop_entry("vendor-flat.desktop", std::slice::from_ref(&apps)),
+            Some(apps.join("vendor-flat.desktop")),
+            "顶层与嵌套推出同一 id 时浅层优先"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// XDG 目录取值：空串按规范等同未设置，否则会把系统 applications 目录漏掉。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn applications_dirs_treats_empty_xdg_values_as_unset() {
+        use std::ffi::OsStr;
+        let home = OsStr::new("/home/tester");
+        let defaults = applications_dirs_from(None, None, Some(home));
+        assert_eq!(
+            defaults,
+            vec![
+                PathBuf::from("/home/tester/.local/share/applications"),
+                PathBuf::from("/usr/local/share/applications"),
+                PathBuf::from("/usr/share/applications"),
+            ]
+        );
+        assert_eq!(
+            applications_dirs_from(Some(OsStr::new("")), Some(OsStr::new("")), Some(home)),
+            defaults,
+            "空串应与未设置等价"
+        );
+        assert_eq!(
+            applications_dirs_from(
+                Some(OsStr::new("/opt/data")),
+                Some(OsStr::new("/opt/a:/opt/b")),
+                Some(home)
+            ),
+            vec![
+                PathBuf::from("/opt/data/applications"),
+                PathBuf::from("/opt/a/applications"),
+                PathBuf::from("/opt/b/applications"),
+            ]
+        );
+        assert_eq!(
+            applications_dirs_from(None, None, None),
+            vec![
+                PathBuf::from("/usr/local/share/applications"),
+                PathBuf::from("/usr/share/applications"),
+            ],
+            "无 HOME 时不应造出相对路径"
+        );
+    }
+
+    /// 处理器必须始终有活着的父进程（issue #865）：由等待子进程的 shell 启动后，
+    /// 处理器读到的 PPID 是那个 shell 且 shell 仍在运行；退回分离式启动
+    /// （open::that_detached 的 double-fork + setsid）时处理器会被 init 收养、
+    /// PPID=1，本用例即变红。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn waited_handler_keeps_parent_alive() {
+        let dir = std::env::temp_dir().join(format!("dsh-handler-ppid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ppid_file = dir.join("ppid.txt");
+        let command = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("echo $PPID > {}; sleep 1", ppid_file.display()),
+        ];
+        let mut child = spawn_waited_handler(&command).unwrap();
+        let mut recorded = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&ppid_file) {
+                recorded = text.trim().parse::<u32>().ok();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let parent = recorded.expect("处理器应写出自己的 PPID");
+        assert_eq!(parent, child.id(), "处理器的父进程应是等待它的 shell");
+        assert_ne!(parent, 1, "处理器不应被 init 收养");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "等待子进程的 shell 应在处理器运行期间存活"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 处理器程序缺失或不可执行时返回 Err，让 open_installer_now 走 opener 兜底，
+    /// 而不是静默起一个必然失败的 shell（桌面条目可能指向已被卸载的处理器）。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_handler_program_is_rejected() {
+        assert!(spawn_waited_handler(&[]).is_err());
+        assert!(spawn_waited_handler(&["/nonexistent/gdebi-gtk".to_string()]).is_err());
+        assert!(spawn_waited_handler(&["no-such-handler-9f3a".to_string()]).is_err());
+        let dir = std::env::temp_dir().join(format!("dsh-handler-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = dir.join("plain-handler");
+        std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
+        assert!(
+            spawn_waited_handler(&[plain.to_string_lossy().into_owned()]).is_err(),
+            "存在但无执行位的程序应被拒绝"
+        );
+        let mut child = spawn_waited_handler(&["/bin/true".to_string()]).unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
