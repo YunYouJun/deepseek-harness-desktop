@@ -1,11 +1,28 @@
 // @vitest-environment jsdom
 import { cleanup, render } from '@testing-library/react'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MarkdownPreview } from './markdown'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+it('skips parsing and sanitizing when Markdown text is unchanged', () => {
+  const parse = vi.spyOn(marked, 'parse')
+  const sanitize = vi.spyOn(DOMPurify, 'sanitize')
+  const { container, rerender } = render(<MarkdownPreview text="# Skill" />)
+  expect(parse).toHaveBeenCalledTimes(1)
+  expect(sanitize).toHaveBeenCalledTimes(1)
+  rerender(<MarkdownPreview text="# Skill" />)
+  expect(parse).toHaveBeenCalledTimes(1)
+  expect(sanitize).toHaveBeenCalledTimes(1)
+  rerender(<MarkdownPreview text="**Updated**" />)
+  expect(parse).toHaveBeenCalledTimes(2)
+  expect(sanitize).toHaveBeenCalledTimes(2)
+  expect(container.querySelector('strong')?.textContent).toBe('Updated')
 })
 
 it('preserves headings, links, fenced code, tables and task lists', () => {

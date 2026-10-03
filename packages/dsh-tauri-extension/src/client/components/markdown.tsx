@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
+import { useMemo } from 'react'
 
 const MD_BODY = [
   '[&_h1]:mt-[14px] [&_h1]:mb-[6px] [&_h1]:text-[18px] [&_h1]:text-primary [&_h1]:leading-[1.4]',
@@ -15,7 +16,7 @@ const MD_BODY = [
 ].join(' ')
 
 export function MarkdownPreview(props: { text: string }): ReactElement {
-  const html = DOMPurify.sanitize(marked.parse(props.text, { async: false, gfm: true, breaks: false }))
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(props.text, { async: false, gfm: true, breaks: false })), [props.text])
   // eslint-disable-next-line react/dom-no-dangerously-set-innerhtml -- DOMPurify 净化后保留原生 HTML 属性语义
   return <div className={MD_BODY} dangerouslySetInnerHTML={{ __html: html }} />
 }
