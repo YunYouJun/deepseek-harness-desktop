@@ -580,6 +580,70 @@ fn fullscreen_menu_label_key(is_fullscreen: bool) -> &'static str {
     }
 }
 
+fn help_menu_window_label<'a>(
+    windows: impl IntoIterator<Item = (&'a str, bool)>,
+) -> Option<&'a str> {
+    let mut main_window = None;
+    for (label, focused) in windows {
+        if label == crate::desktop::pet::PET_WINDOW_LABEL {
+            continue;
+        }
+        if focused {
+            return Some(label);
+        }
+        if label == MAIN_WINDOW_LABEL {
+            main_window = Some(label);
+        }
+    }
+    main_window
+}
+
+#[cfg(test)]
+mod help_menu_tests {
+    use super::help_menu_window_label;
+
+    #[test]
+    fn help_links_prefer_the_focused_shell_window() {
+        for windows in [
+            [("main", false), ("window-1", true), ("pet", false)],
+            [("window-1", true), ("main", false), ("pet", false)],
+        ] {
+            assert_eq!(help_menu_window_label(windows), Some("window-1"));
+        }
+        assert_eq!(
+            help_menu_window_label([("window-1", false), ("main", true)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn help_links_fall_back_to_main_when_only_the_pet_is_focused() {
+        assert_eq!(
+            help_menu_window_label([("main", false), ("window-1", false), ("pet", true)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn help_links_fall_back_to_main_when_all_windows_are_unfocused() {
+        for windows in [
+            [("main", false), ("window-1", false), ("pet", false)],
+            [("window-1", false), ("pet", false), ("main", false)],
+        ] {
+            assert_eq!(help_menu_window_label(windows), Some("main"));
+        }
+    }
+
+    #[test]
+    fn help_links_never_fall_back_to_a_pet_or_an_arbitrary_extra_window() {
+        assert_eq!(
+            help_menu_window_label([("window-1", false), ("pet", true)]),
+            None
+        );
+        assert_eq!(help_menu_window_label([]), None);
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct ViewMenuEntry {
     id: String,
@@ -1405,9 +1469,6 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             | "desktop-zoom-in"
             | "desktop-zoom-out"
             | "desktop-zoom-reset"
-            | "desktop-documentation"
-            | "desktop-feedback"
-            | "desktop-harness-feedback"
             | "desktop-task-manager" => {
                 if let Some(window) = app.webview_windows().into_values().find(|window| {
                     window.label() != crate::desktop::pet::PET_WINDOW_LABEL
@@ -1418,6 +1479,22 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                     {
                         log::warn!("[menu] failed to emit View action: {error}");
                     }
+                }
+            }
+            "desktop-documentation" | "desktop-feedback" | "desktop-harness-feedback" => {
+                let windows = app.webview_windows();
+                let target = help_menu_window_label(
+                    windows
+                        .values()
+                        .map(|window| (window.label(), window.is_focused().unwrap_or(false))),
+                );
+                if let Some(label) = target {
+                    if let Err(error) = app.emit_to(label, "macos-menu-action", event.id().as_ref())
+                    {
+                        log::warn!("[menu] failed to emit Help action: {error}");
+                    }
+                } else {
+                    log::warn!("[menu] HELP_WINDOW_NOT_FOUND");
                 }
             }
             #[cfg(target_os = "macos")]
