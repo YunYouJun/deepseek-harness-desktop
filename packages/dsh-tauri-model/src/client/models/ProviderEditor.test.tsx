@@ -3,7 +3,6 @@ import type { CredentialInfo, SettingsNamespaceView } from '../types/remotes'
 import type { ProviderEditorProps } from './ProviderEditor'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { get } from '../../../../dsh-tauri/src/client/modules/lodash-es'
 import { ProviderEditor } from './ProviderEditor'
 
 vi.mock('./styles.ts', () => ({ modelStyles: {} }))
@@ -56,7 +55,10 @@ it('invalidates credential metadata immediately when the key reference changes a
     settingsPath: [],
     operations: { describeCredential, storeCredential: unexpected, removeCredential: unexpected, writeSettings: unexpected, discoverModels: unexpected },
     schema: {
-      getPath: (value, path) => path.length === 0 ? value : get(value, path),
+      getPath: (value, path) => {
+        expect(path.length).toBeLessThanOrEqual(1)
+        return path.length === 0 ? value : (value as Record<string, unknown> | undefined)?.[path[0]!]
+      },
       rehydrate: vi.fn(),
       nodeAtPath: vi.fn(() => ({ type: 'object', meta: {} }) as ReturnType<ProviderEditorProps['schema']['nodeAtPath']>),
       validate: vi.fn(),
