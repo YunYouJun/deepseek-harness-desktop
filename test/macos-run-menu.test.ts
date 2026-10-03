@@ -12,6 +12,16 @@ function submenuItems(id: string) {
 }
 
 describe('macOS native menu', () => {
+  it('routes every Help link to a single shell window instead of broadcasting it', () => {
+    const handler = builderSource.slice(builderSource.indexOf('.on_menu_event(|app, event|'))
+    const focusedActions = handler.slice(0, handler.indexOf('#[cfg(target_os = "macos")]'))
+    const broadcastActions = handler.slice(handler.indexOf('"desktop-config"'), handler.indexOf('_ => {}'))
+    for (const action of ['desktop-documentation', 'desktop-feedback', 'desktop-harness-feedback']) {
+      expect(focusedActions).toContain(`"${action}"`)
+      expect(broadcastActions).not.toContain(`"${action}"`)
+    }
+    expect(focusedActions).toContain('app.emit_to(window.label(), "macos-menu-action", event.id().as_ref())')
+  })
   it('declares English and Simplified Chinese for system-provided menu items', () => {
     const plist = readFileSync(new URL('../src-tauri/Info.plist', import.meta.url), 'utf8').replace(/<!--[\s\S]*?-->/g, '')
     const localizations = plist.match(/<key>CFBundleLocalizations<\/key>\s*<array>([\s\S]*?)<\/array>/)

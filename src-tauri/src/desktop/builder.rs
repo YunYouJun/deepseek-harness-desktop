@@ -1405,6 +1405,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             | "desktop-zoom-in"
             | "desktop-zoom-out"
             | "desktop-zoom-reset"
+            | "desktop-documentation"
             | "desktop-feedback"
             | "desktop-harness-feedback"
             | "desktop-task-manager" => {
@@ -1441,7 +1442,6 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             | "desktop-copy-run-logs"
             | "desktop-check-update"
             | "desktop-restart"
-            | "desktop-documentation"
             | "desktop-keyboard-shortcuts"
             | "desktop-new-window"
             | "desktop-new-chat"
