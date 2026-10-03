@@ -82,7 +82,7 @@ describe('macOS native menu', () => {
   ])('routes %s from its native item to the %s configuration tab', (action, tab, key, zh, en) => {
     expect(builderSource).toMatch(new RegExp(`MenuItem::with_id\\(\\s*app,\\s*"${action}",\\s*crate::config::i18n::t\\("${key}"\\)`))
     const eventHandler = builderSource.slice(builderSource.indexOf('.on_menu_event(|app, event|'))
-    expect(eventHandler).toMatch(new RegExp(`"${action}"[\\s\\S]*?app.emit\\("macos-menu-action", event.id\\(\\).as_ref\\(\\)\\)`))
+    expect(eventHandler).toMatch(new RegExp(`"${action}"[\\s\\S]*?app.emit_to\\(label, "macos-menu-action", event.id\\(\\).as_ref\\(\\)\\)`))
     expect(navbarSource).toMatch(new RegExp(`case '${action}':\\s*handleOpenConfig\\('${tab}'\\)`))
     expect(i18nSource).toContain(`"${key}" => ("${zh}", "${en}")`)
   })
@@ -134,6 +134,31 @@ describe('macOS native menu', () => {
     expect(handler).toContain('window.label() != crate::desktop::pet::PET_WINDOW_LABEL')
     expect(handler).toContain('window.is_focused().unwrap_or(false)')
     expect(handler).toMatch(/app\.emit_to\(\s*window.label\(\),\s*"macos-menu-action",\s*event.id\(\).as_ref\(\),?\s*\)/)
+  })
+
+  it('routes shell commands to one window instead of broadcasting them', () => {
+    const handler = builderSource.slice(builderSource.indexOf('.on_menu_event(|app, event|'))
+    const shellActions = handler.slice(handler.indexOf('"desktop-config"'), handler.indexOf('_ => {}'))
+
+    for (const action of [
+      'desktop-config',
+      'desktop-profiles',
+      'desktop-plugins',
+      'desktop-harness',
+      'desktop-about',
+      'desktop-copy-run-logs',
+      'desktop-check-update',
+      'desktop-restart',
+      'desktop-keyboard-shortcuts',
+      'desktop-new-window',
+      'desktop-new-chat',
+      'desktop-open-folder',
+    ]) {
+      expect(shellActions).toContain(`"${action}"`)
+    }
+    expect(shellActions).toContain('menu_action_window_label(')
+    expect(shellActions).toContain('app.emit_to(label, "macos-menu-action", event.id().as_ref())')
+    expect(handler).not.toContain('app.emit("macos-menu-action"')
   })
 
   it('requests current window state only after the rebuilt native menu is installed', () => {

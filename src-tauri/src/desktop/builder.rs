@@ -1100,7 +1100,67 @@ mod shell_nav_tests {
 
 #[cfg(test)]
 mod menu_tests {
-    use super::fullscreen_menu_label_key;
+    use super::{fullscreen_menu_label_key, menu_action_window_label};
+    use crate::desktop::pet::PET_WINDOW_LABEL;
+
+    #[test]
+    fn menu_actions_prefer_the_focused_shell_window_in_any_iteration_order() {
+        let windows = [
+            ("main", false),
+            ("window-1", true),
+            (PET_WINDOW_LABEL, false),
+        ];
+        assert_eq!(menu_action_window_label(windows), Some("window-1"));
+        assert_eq!(
+            menu_action_window_label(windows.into_iter().rev()),
+            Some("window-1")
+        );
+    }
+
+    #[test]
+    fn menu_actions_target_main_when_it_is_focused() {
+        assert_eq!(
+            menu_action_window_label([("main", true), ("window-1", false)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn menu_actions_fall_back_to_main_when_only_the_pet_is_focused() {
+        assert_eq!(
+            menu_action_window_label([
+                (PET_WINDOW_LABEL, true),
+                ("window-1", false),
+                ("main", false)
+            ]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn menu_actions_fall_back_to_main_when_all_windows_are_unfocused() {
+        assert_eq!(
+            menu_action_window_label([("window-1", false), ("main", false)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn menu_actions_target_a_focused_secondary_window_without_main() {
+        assert_eq!(
+            menu_action_window_label([("window-1", true)]),
+            Some("window-1")
+        );
+    }
+
+    #[test]
+    fn menu_actions_have_no_target_without_a_focused_shell_or_main() {
+        assert_eq!(
+            menu_action_window_label([(PET_WINDOW_LABEL, true), ("window-1", false)]),
+            None
+        );
+        assert_eq!(menu_action_window_label([]), None);
+    }
 
     #[test]
     fn fullscreen_menu_label_tracks_native_fullscreen_state() {
@@ -1343,7 +1403,24 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
     ]
 }
 
-// configure tauri builder
+fn menu_action_window_label<'a>(
+    windows: impl IntoIterator<Item = (&'a str, bool)>,
+) -> Option<&'a str> {
+    let mut main = None;
+    for (label, focused) in windows {
+        if label == crate::desktop::pet::PET_WINDOW_LABEL {
+            continue;
+        }
+        if focused {
+            return Some(label);
+        }
+        if label == MAIN_WINDOW_LABEL {
+            main = Some(label);
+        }
+    }
+    main
+}
+
 pub fn builder() -> tauri::Builder<tauri::Wry> {
     let mut builder = tauri::Builder::default();
 
@@ -1426,8 +1503,19 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             | "desktop-new-window"
             | "desktop-new-chat"
             | "desktop-open-folder" => {
-                if let Err(error) = app.emit("macos-menu-action", event.id().as_ref()) {
-                    log::warn!("[menu] failed to emit macOS menu action: {error}");
+                let windows = app.webview_windows();
+                let target = menu_action_window_label(
+                    windows
+                        .values()
+                        .map(|window| (window.label(), window.is_focused().unwrap_or(false))),
+                );
+                if let Some(label) = target {
+                    if let Err(error) = app.emit_to(label, "macos-menu-action", event.id().as_ref())
+                    {
+                        log::warn!("[menu] failed to emit macOS menu action: {error}");
+                    }
+                } else {
+                    log::warn!("[menu] MENU_WINDOW_NOT_FOUND: {}", event.id().as_ref());
                 }
             }
             _ => {}
