@@ -1,13 +1,48 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { useMemo } from 'react'
+import { createElement } from 'react'
 
-function parseMarkdown(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text, { async: false, gfm: true, breaks: false }) as string)
+const ATTRIBUTE_NAMES: Readonly<Record<string, string>> = {
+  class: 'className',
+  for: 'htmlFor',
+  colspan: 'colSpan',
+  rowspan: 'rowSpan',
+  tabindex: 'tabIndex',
+}
+const TABLE_CONTAINERS = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'colgroup'])
+
+function renderNodes(parent: ParentNode): ReactNode[] {
+  const occurrences = new Map<string, number>()
+  return Array.from(parent.childNodes, (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (parent instanceof HTMLElement && TABLE_CONTAINERS.has(parent.localName) && !node.textContent?.trim())
+        return null
+      return node.textContent
+    }
+    if (!(node instanceof HTMLElement))
+      return null
+    const occurrence = occurrences.get(node.outerHTML) ?? 0
+    occurrences.set(node.outerHTML, occurrence + 1)
+    const attributes: Record<string, unknown> = { key: JSON.stringify([node.outerHTML, occurrence]) }
+    for (const { name, value } of Array.from(node.attributes)) {
+      if (name === 'style') {
+        attributes.style = Object.fromEntries(Array.from(node.style, property => [
+          property.startsWith('--') ? property : property.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+          node.style.getPropertyValue(property),
+        ]))
+      }
+      else if (name === 'checked' || name === 'disabled') {
+        attributes[name === 'checked' ? 'defaultChecked' : name] = true
+      }
+      else {
+        attributes[ATTRIBUTE_NAMES[name] ?? name] = value
+      }
+    }
+    return createElement(node.localName, attributes, ...renderNodes(node))
+  })
 }
 
-// 注入 HTML 的排版：marked 产出的元素不在 JSX 里，只能由容器用 `[&_tag]` 变体下发。
 const MD_BODY = [
   '[&_h1]:mt-[14px] [&_h1]:mb-[6px] [&_h1]:text-[18px] [&_h1]:text-primary [&_h1]:leading-[1.4]',
   '[&_h2]:mt-[14px] [&_h2]:mb-[6px] [&_h2]:text-[16px] [&_h2]:text-primary [&_h2]:leading-[1.4]',
@@ -21,6 +56,9 @@ const MD_BODY = [
 ].join(' ')
 
 export function MarkdownPreview(props: { text: string }): ReactElement {
-  const html = useMemo(() => parseMarkdown(props.text), [props.text])
-  return <div className={MD_BODY} dangerouslySetInnerHTML={{ __html: html }} />
+  const fragment = DOMPurify.sanitize(marked.parse(props.text, { async: false, gfm: true, breaks: false }), {
+    RETURN_DOM_FRAGMENT: true,
+    USE_PROFILES: { html: true },
+  })
+  return <div className={MD_BODY}>{renderNodes(fragment)}</div>
 }
